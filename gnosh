@@ -1,0 +1,996 @@
+#!/bin/bash
+# NAME: gnosh
+# DESC: Desktop-aware command-line sugar
+# DEPS: xdg-mime crudini
+
+# CONF # symbolic links' names
+INFO_NAME=i
+OPEN_NAME=o
+SEEK_NAME=s
+
+
+
+############
+### Open ###
+############
+
+# NAME: Open
+# DESC: Opens XDG launchers, directories, files & urls
+# ARGS: ["DRY"] # Dry-run
+# ARGS: TARGET  # Target pattern
+# ARGS: ARG ... # Additionnal arg
+# DEPS: nohup xdg-mime crudini
+
+# CONF # Use 'Nohup' function when required
+FILE_MANAGER="Nohup nautilus --"
+TERM_CONSOLE="Nohup gnome-terminal -e"
+TEXT_EDITOR="Nohup gnome-terminal -e vi --"
+WEB_BROWSER="Nohup xdg-open"
+
+# Konsole support
+if which konsole &>/dev/null ; then
+    TERM_CONSOLE="Nohup konsole -e"
+    TEXT_EDITOR="Nohup konsole -e vi --"
+fi
+
+# Sublime support
+which subl &>/dev/null && TEXT_EDITOR="subl --"
+
+Nohup () # $*:ARGS
+{
+    #    which "$1" &>/dev/null \
+    # || [[ -x "$1" ]] \
+    # || return 1
+
+    PS4=
+    set -x
+    nohup "$@" &>/dev/null </dev/null &
+    { set +x; } 2>/dev/null
+}
+
+Keep () # $*:ARGS
+{
+    shopt -s checkwinsize
+
+    SECONDS=
+    "$@"
+    local ret=$?
+
+    local col='\e[0;102m''\e[1;90m'
+    [[ $ret -ne 0 ]] && col='\e[0;101m''\e[1;93m'
+
+    echo -ne \
+        '\e\033['$LINES';0H'$col \
+        "Exited after $SECONDS secs with code $ret, [ENTER] to close" \
+        '\e\033[K''\e[0m''\e\033['$LINES';'$COLUMNS'H'
+    read -s
+}
+
+RunFunction () # $1:SOURCE $*:COMMAND
+{
+    local src=$1
+    shift
+
+    # bash --rcfile "$src" -c "$@"
+
+    source "$src"
+    "$@"
+}
+
+Run ()
+{
+    local pref="RUN"
+    [[ "$1" == "DRY" ]] && { pref="DRY" ; shift ; }
+
+    if [[ "$pref" == "DRY" ]] ; then
+
+        local msg
+        msg="$( exec 2>&1; PS4= ; set -x ; echo "$@" >/dev/null )"
+        msg=${msg#echo }
+        msg=${msg/#Nohup /nohup }
+        # msg=${msg/#Nohup /nohup &>/dev/null </dev/null }
+        echo "$pref: $msg" >&2
+
+    else
+
+        echo -n "$pref: "
+
+        if [[ "$1" == "Nohup" ]] ; then
+            shift
+            Nohup "$@" 2>&1
+        else
+            PS4=
+            set -x
+            { "$@" ; } 2>&1
+            { set +x ; } 2>/dev/null
+        fi
+
+    fi
+}
+
+RunBinary () # $1:BIN $*:ARGS
+{
+    local target=$1
+    shift
+
+    if [[ -z "$( ldd -- "$target" 2>/dev/null | grep -E "^\s*libX11\." )" ]] ; then
+        if [[ -n "$MODE_TERM" ]] ; then
+            Run $DRY_MODE $TERM_CONSOLE \
+                "$target" "$@"
+        elif [[ $target == "$( readlink -f "$BASH_SOURCE" )" ]] ; then
+            Run $DRY_MODE $TERM_CONSOLE \
+                 "$target" Keep "$@"
+        else
+            Run $DRY_MODE $TERM_CONSOLE \
+                "$( readlink -f "$BASH_SOURCE" )" Keep \
+                "$target" "$@"
+        fi
+    else # X11 apps
+        Run ${DRY_MODE:-$MODE_TERM} Nohup "$target" "$@"
+    fi
+}
+
+RunDesktop () # $1:DESKTOP_FILE $*:ARGS
+{
+    local term=$( crudini --get $1 "Desktop Entry" Terminal 2>/dev/null )
+    local line=$( crudini --get $1 "Desktop Entry" Exec     2>/dev/null )
+    shift
+
+    # Templatize
+    if [[ $line =~ %[fu] ]] ; then
+        local param
+        [[ $# -ge 1 ]] && param="\"$1\""
+        line="${line/\%[fu]/$param}"
+    fi
+    if [[ $line =~ %[FU] ]] ; then
+        local repl
+        for f in "$@" ; do [[ -n "$f" ]] && repl="$repl '$f'" ; done
+        line="${line/\%[FU]/$repl}"
+    fi
+
+    if [[ "$term" == 'true' ]] ; then
+        eval Run $DRY_MODE "$TERM_CONSOLE $line"
+    else
+        eval Run ${DRY_MODE:-$MODE_TERM} Nohup "$line"
+    fi
+}
+
+Open () # $1:TARGET $*:ARGS
+{
+    local color
+      [[ -t 1 ]] \
+    && which tput &>/dev/null \
+    && [ $( tput colors 2>/dev/null ) -ge 8 ] \
+    && color="--color"
+
+    local DRY_MODE=
+    if [[ "$1" == "-d" ]] || [[ "$1" == "DRY" ]] ; then
+        shift
+        DRY_MODE=DRY
+        # echo "WAR: Using DRY_MODE" >&2
+    fi
+
+    local MODE_TERM=
+    if [[ -z "$DRY_MODE" ]] && [[ -z "$DISPLAY" ]] ; then
+
+        if [[ -z "$DISPLAY_WARNING" ]] ; then
+            echo "WAR: Missing \$DISPLAY, using MODE_TERM" >&2
+            DISPLAY_WARNING=1
+        fi
+
+        MODE_TERM=DRY
+        FILE_MANAGER="ls $color -FAlhpv --time-style=iso --group-directories-first --"
+        TERM_CONSOLE=""
+        TEXT_EDITOR="vi --"
+        WEB_BROWSER="w3m"
+    fi
+
+    local target=$1
+    shift
+
+    if [[ ! -e "$target" ]]; then
+
+        # Probe URL
+        case "$target" in
+            ftp://*|http://*|https://*)
+                Run $DRY_MODE $WEB_BROWSER "$target"
+                return $? ;;
+        esac
+
+        # Probe .bashrc
+        local probed="$( CheckBashItem "$target" )"
+
+        if [[ $probed =~ ^alias: ]] ; then
+
+            # Probed .bashrc alias
+            probed=${probed#alias:*}
+
+            local prefix="$target $@"
+
+            if [[ "${prefix:0:${#probed}}" != "$probed" ]] ; then
+
+                # DEV: merge args carefully
+                local savedArgs=( "$@" )
+                eval set -- "$probed" # DEV: loosing alias redirections here
+                set -- "$@" "${savedArgs[@]}"
+
+                # DEV: alias env support
+                local hasEnv checkEnv=1
+                for i in "$@" ; do
+                    [[ -n $checkEnv && $i =~ [\=] ]] && hasEnv=1 || checkEnv=
+                done
+                if [[ -n $hasEnv ]] ; then
+                    $FUNCNAME $DRY_MODE /usr/bin/env "$@"
+                else
+                    $FUNCNAME $DRY_MODE "$@"
+                fi
+                return $?
+
+            fi
+
+        elif [[ $probed =~ ^function ]] ; then
+
+            # Probed .bashrc function
+            probed=${probed#function:*}
+
+            local lineno=${probed##*:} # TODO
+            probed=${probed%:*}
+
+            $FUNCNAME $DRY_MODE  "$( readlink -f "$BASH_SOURCE" )" RunFunction "$probed" "$target" "$@"
+            return $?
+
+        fi
+
+        # Probe XDG launcher + PATH executables
+        local probed
+        probed="$( Seek "$target" )"
+        if [[ $? -ne 0 ]] \
+        || [[ ! -e "$probed" ]] ; then
+            echo "ERR: failed to probe \"$target\"" >&2
+            return 1
+        fi
+        $FUNCNAME $DRY_MODE $probed "$@"
+        return $?
+
+    else # target exists
+
+        if [[ -d "$target" ]] ; then
+            Run $DRY_MODE $FILE_MANAGER "$target"
+            return $?
+        elif [[ ! -f "$target" ]] ; then
+            echo "ERR: skipped invalid file type $target" >&2
+            return 1
+        fi
+
+        local fileMime=$( xdg-mime query filetype "$target" )
+        # ALT local fileMime=$( gvfs-info -a standard::content-type -- "$target" | awk 'NR==3{print $2}' )
+        # ALT local fileMime=$( file -b0 --mime-type -- "$target" )
+        # DEV xdg-mime CALLS gnomevfs-info REQUIRES gvfs-bin
+        case "$fileMime" in
+
+              'application/x-desktop')
+                RunDesktop "$target" "$@" ;;
+
+              'text/x-shellscript' \
+            | 'text/x-python' \
+            | 'application/x-ruby' \
+            | 'application/x-shellscript' \
+            | 'application/x-perl' \
+            | 'application/x-executable' \
+            | 'application/x-sharedlib' )
+                if [[ -x "$target" ]] ; then
+                    [[ $target =~ / ]] || target="./$target"
+                        RunBinary "$target" "$@" ;
+                else
+                    echo "ERR: Missing executable bit for $target" >&2
+                    return 1
+                fi
+                ;;
+
+              'text/'* )
+                Run $DRY_MODE $TEXT_EDITOR "$target" ;;
+
+            *)
+                if [[ -n "$MODE_TERM" ]] ; then
+                    echo "ERR: Unsupported MODE_TERM for mimetype $fileMime" >&2
+                    return 1
+                fi
+
+                Run ${DRY_MODE:-$MODE_TERM} Nohup xdg-open "$target" ;;
+                # ALT Run ${DRY_MODE:-$MODE_TERM} Nohup run-mailcap --action=view -- "$target" ;;
+        esac
+
+    fi
+}
+
+
+
+############
+### Info ###
+############
+
+# NAME: Info
+# DESC: Inspect files
+# ARGS: [-v]         # Expand results
+# ARGS: [TARGET] ... # Target pattern
+# DEPS: xdg-mime crudini
+
+# TODO: ROW acls => getfacl
+# TODO: ROW caps => getcap
+
+
+Ellipsis () # $1:LEN $2:VAL
+{
+    local ellipsis="…" # …
+    local max=$(($1-${#ellipsis}))
+
+    if [[ ${#2} -gt $1 ]] ; then
+        echo "${2:0:$max}$ellipsis"
+    else
+        echo "$2"
+    fi
+}
+
+
+RenderInfo () # $1:NAME # $*:OPT_VAL
+{
+    local name=$1 val cnt max=32
+    shift
+
+    # Read
+    if [[ $# -eq 0 ]] ; then
+        val="$( cat )"
+        cnt=$( wc -l <<<"$val" )
+    else
+        val="$@"
+        cnt=1
+    fi
+
+    [[ -z "$val" ]] && return
+
+
+    # Render
+    local headWidth=6
+    local dataWidth=$((COLUMNS-headWidth))
+
+    # Complete to headWidth
+    name="$( printf "%-${headWidth}s" "$name" )"
+
+    # Row header
+    [[ -n "$color" ]] && echo -ne '\e[1;97m'
+    echo -ne "$name"
+    [[ -n "$color" ]] && echo -ne '\e[0m'
+
+    if [[ -z "$MODE_VERB" ]] ; then
+
+        # Join
+        val="$( awk '{printf "%s", $0; if (!f) {f=0; printf ", "} }' <<<"$val" )"
+        val="${val:0:$((${#val}-2))}"
+
+        # Ellipsis
+        if  [[ ${#val} -gt $dataWidth ]] ; then
+            if [[ $cnt -gt 1 ]] ; then
+                local label=" [$cnt]"
+                val="$( Ellipsis $((dataWidth-${#label})) "$val" )$label"
+            else
+                val="$( Ellipsis $dataWidth "$val" )"
+            fi
+        fi
+
+        echo "$val"
+
+    else
+
+        if [[ $cnt -gt 1 ]] ; then
+            echo "[$cnt]"
+            awk -v w=$headWidth '{ printf("% "w"s%s\n", "", $0) }' <<<"$val"
+        else
+            echo "$val"
+        fi
+
+    fi
+}
+
+
+FetchInfo ()
+{
+    local target="$1"
+
+    local color
+      [[ -t 1 ]] \
+    && which tput &>/dev/null \
+    && [ $( tput colors 2>/dev/null ) -ge 8 ] \
+    && color="--color"
+
+    echo -en "$prefix"
+    prefix=$'\n'
+
+    # Seek
+    if [[ ! -e "$target" ]] ; then
+
+        if [[ -L "$target" ]] ; then
+            echo "ERR: invalid link \"$target\" -> \"$( readlink -s -- "$target" )\"" >&2
+            return 1
+        fi
+
+        local probed
+
+        # Probe .bashrc
+        local probed="$( CheckBashItem "$target" )"
+
+        if [[ $probed =~ ^alias: ]] ; then
+
+            # Probed .bashrc alias
+            probed=${probed#alias:*}
+            echo "\`$target\` is an alias to \`$probed\`"
+            for i in $probed; do
+                [[ $i =~ [=\<\>] ]] && continue
+                probed=$i
+                break
+            done
+            if [[ "$target" != "$probed" ]] ; then
+                prefix= $FUNCNAME "$probed"
+                return $?
+            fi
+
+        elif [[ $probed =~ ^function: ]] ; then
+
+            # Probed .bashrc function
+            probed=${probed#function:*}
+
+            local lineno=${probed##*:} # TODO
+            probed=${probed%:*}
+            echo "$target() is a function defined in $probed$( [[ -n "$color" ]] && echo -ne '\e[1;97m' ):$lineno$( [[ -n "$color" ]] && echo -ne '\e[0m' )"
+            prefix= $FUNCNAME "$probed"
+            return $?
+
+        fi
+
+        # Probe XDG launcher + PATH executables
+        local probed
+        probed="$( Seek "$target" )"
+
+        if [[ $? -ne 0 ]] \
+        || [[ ! -e "$probed" ]] ; then
+            echo "ERR: unknown file \"$target\"" >&2
+            return 1
+        fi
+        target="$probed"
+    fi
+
+    # Warnings
+    if ! [[ -r "$target" ]] ; then
+        echo "WAR: No read perms" >&2
+    elif [[ -d "$target" ]] && ! [[ -x "$target" ]] ; then
+        echo "WAR: No exec perms on directory" >&2
+    fi
+
+    # Canonicalize
+    target="$( realpath -s -- "$target" )"
+
+
+    # HEADER name
+    # BUG: no way to quote ! inside "
+    local quote
+    [[ ! $target =~ ^[a-Z0-9/._@%:-]+$ ]] && quote='-Q'
+    # TOCHECK    --quoting-style=WORD
+    #   use quoting style  WORD  for  entry  names:
+    #   literal,  locale,  shell,  shell-always,  shell-escape,  shell-escape-always,  c,  escape
+      ls $color $quote -d --indicator-style=slash -- "$target" \
+    | tr '\n' ' '
+
+
+    # HEADER type symlinks => Recurse
+    if [[ -L "$target" ]] ; then
+        echo "is a symbolic link to:"
+
+        local link="$( readlink -- "$target" )"
+
+        # canonicalize
+        if [[ ! $link =~ ^/ ]] ; then
+            link="$( dirname -- "$target" )/$link"
+            link="$( realpath -s -- "$link" )"
+        fi
+
+        prefix= $FUNCNAME "$link"
+        return $?
+    fi
+
+    # HEADER type
+    for test in b c d f p S; do
+           test -$test "$target" 2>/dev/null \
+        && COLUMNS=80 \
+              man test 2>/dev/null \
+            | grep -A1 -- "-$test FILE" \
+            | tail -1 \
+            | sed -E 's/.* exists and //' \
+        && break
+    done
+
+    # ROW bits: special bits
+    for test in k g u ; do
+           test -$test "$target" 2>/dev/null \
+        && COLUMNS=80 \
+              man test 2>/dev/null \
+            | grep -A1 -- "-$test FILE" \
+            | tail -1 \
+            | sed -E 's/.* exists and (its )?//'
+    done | RenderInfo 'bits'
+
+    # find output parsing
+    local find=$(
+        find -- "$target" -maxdepth 0 -printf \
+            'Meta %C+ Read %A+ Write %T+|Inode %i Owner %U:%G/%u:%g Perms %04m/%M|%s|%n'
+    )
+    IFS='|' read -a findArr <<<"$find"
+    local date="${findArr[0]}" # combined times: modification, access, status change
+    local stat="${findArr[1]}" # combined stats
+    local fsiz="${findArr[2]}" # File's size in bytes
+    local flnk="${findArr[3]}" # Number of hard links to file
+
+
+    # ROW stat
+    RenderInfo 'stat' "$stat"
+
+    # ROW flag
+      lsattr -d -- "$target" 2>/dev/null \
+    | awk '$1!~/^-+$/{print $1}' \
+    | RenderInfo 'flag'
+
+    # ROW attr
+      getfattr -d -- "$target" 2>/dev/null \
+    | awk '(NF>0) && (NR>1) { i=index($0, "=") ; l=length( substr( $0, i ) )
+        if ( l>32 ) { print substr( $0, 1, i+32 ) "…\"(" l ")" } else print }' \
+    | RenderInfo 'attr'
+
+    # ROW date
+    date="$( sed -E -e 's/\+/ /g' -e 's/\.[0-9]+//g' <<<"$date" )"
+    RenderInfo 'date' "$date"
+
+    # ROW real
+    local readlink="$( readlink -f -- "$target" )"
+    [[ "$readlink" == "$target" ]] || RenderInfo 'real' "$readlink"
+
+    # ROW phys
+      df --output='fstype,source,target' -- "$target" \
+    | awk 'NR==1{i=index($0,"Mount")}NR==2{print $1":"$2" on "substr($0,i)}' \
+    | grep -Ev " on /$" \
+    | RenderInfo 'phys'
+
+
+    # Directory-specific
+    if [[ -d "$target" ]] && [[ -r "$target" ]] && [[ -x "$target" ]] ; then
+
+        # ROW fail: unreadables + broken links
+        local fail=$(
+              find -- "$target" 2>/dev/null \
+                                 -type l   \! -readable   -printf "/%p\n" \
+                , \! -type d  \! -type l   \! -readable   -printf "%p\n" \
+                ,    -type d  \! -readable \! -executable -printf "%p/\n" \
+                ,    -type d     -readable \! -executable -printf "%p//\n" \
+                ,    -type d  \! -readable    -executable -printf "%p///\n" \
+            | sort
+        )
+        RenderInfo 'fail' <<<"$fail"
+
+        # ROW size: total
+        local sizeWarn
+        [[ -n "$fail" ]] && sizeWarn="+fail"
+        RenderInfo 'size' \
+            "~" \
+            $( du -sh -- "$target" 2>/dev/null | cut -f1 ) \
+            $sizeWarn
+
+
+    # File-specific
+    elif [[ -f "$target" ]] && [[ -r "$target" ]] ; then
+
+        # ROW size
+        RenderInfo 'size' \
+            Bytes $fsiz \
+            OnDisk $( du -h -- "$target" 2>/dev/null | cut -f1 ) \
+
+        # ROW hard: hard link count
+        local hardCnt=$flnk # ORIG $( find -- "$target" -printf "%n")
+        if [[ "$hardCnt" -gt 1 ]] 2>/dev/null ; then
+            echo -n "Searching $((hardCnt-1)) hardlinks..." >&2
+            local hard=$( find / -samefile "$target" \! -path "$target" 2>/dev/null )
+            local foundCnt=0
+            [[ -n "$hard" ]] && foundCnt="$( wc -l <<<"$hard" )"
+            if [[ $foundCnt -lt $hardCnt ]] ; then
+                local hardSep
+                for i in $( seq $(( hardCnt - foundCnt - 1 )) ) ; do
+                    [[ -n "$hard" ]] && hardSep="\n"
+                    hard="$hard$( echo -en "$hardSep-") "
+                done
+            fi
+            echo -ne "\r\e[0K" >&2
+            RenderInfo 'hard' <<<"$hard"
+        fi
+
+        # ROW file
+        local file=$(
+              file -b -- "$target" \
+            | awk 'BEGIN{RS=", "}{print $0}' \
+            )
+        RenderInfo 'file' <<<"$file"
+
+        # ROW mime
+        if [[ "$file" != "empty" ]] ; then
+            local mime=$( xdg-mime query filetype "$target" 2>/dev/null )
+            # ALT local mime=$( gvfs-info -a standard::content-type -- "$target" | awk 'NR==3{print $2}' )
+            # ALT local mime=$( file -b0 --mime-type -- "$target" )
+            # DEV xdg-mime CALLS gnomevfs-info REQUIRES gvfs-bin
+            RenderInfo 'mime' "$mime"
+        fi
+
+
+        # Mime-specific
+        case "$mime" in
+
+              'application/x-executable' \
+            | 'application/x-sharedlib' )
+
+                # ROW libs
+                  ldd -- "$target" \
+                | awk '$3~/^\//{print $1}' \
+                | sort -n \
+                | RenderInfo 'libs' \
+                ;;
+
+              'text/'* \
+            | 'text/x-python' \
+            | 'application/x-shellscript' \
+            | 'application/javascript' \
+            | 'application/x-perl' \
+            | 'application/x-ruby' )
+
+                # ROW line
+                local line=$( wc -l <"$target" )
+                RenderInfo 'line' "$line"
+
+                # ROW head
+                local headMax=512
+                local head="$( head --bytes $((headMax+1)) -- "$target" | head --lines 1 )"
+                RenderInfo 'head' "$( Ellipsis $headMax "$head" )"
+
+                # ROW foot
+                if [[ $line -gt 1 ]] ; then
+                    local foot="$(
+                          tac -- "$target" \
+                        | sed -E -e 's/^\s*#.*//g' -e 's/\s#.*//g' \
+                        | head --bytes $((headMax+1)) \
+                        | awk 'NF{print;exit}'
+                        )"
+                    RenderInfo 'foot' "$( Ellipsis $headMax "$foot" )"
+                fi
+                ;;
+
+            'application/x-desktop')
+
+                # ROW line
+                RenderInfo 'line' "$( wc -l <"$target" )"
+
+                if which crudini &>/dev/null ; then
+
+                    # ROW name
+                    local name="$( crudini --get -- "$target" "Desktop Entry" Name 2>/dev/null )"
+                    RenderInfo 'name' "$name"
+
+                    # ROW exec
+                    local exec="$( crudini --get -- "$target" "Desktop Entry" Exec 2>/dev/null )"
+                    RenderInfo 'exec' "$exec"
+
+                fi
+                ;;
+        esac
+
+    # ROW sock: no more information than lsof but hints user to sudo
+    elif [[ -S "$target" ]] ; then
+          netstat -anpe 2>/dev/null \
+        | awk -v p="$target" '$NF==p { print $9 }' \
+        | RenderInfo 'sock'
+    fi
+
+    # ROW dpkg
+    if [[ ! $target =~ ^/(home|dev|media|mnt|proc|root|run|sys|tmp)(/.*)?$ ]] ; then
+        echo -n "Searching dpkg packages ..." >&2
+        local dpkg=$(
+          dpkg -S -- "$target" 2>/dev/null \
+        | awk -F ': ' -v p="$target" '$2!=p{next}{split($1,a,", ");for(i in a)print a[i]}' \
+        | sort -u
+        )
+        echo -ne "\r\e[0K" >&2
+        RenderInfo 'dpkg' "$dpkg"
+    fi
+
+    # ROW lsof
+      lsof -lLnPX +c0 -g^$$ -- "$target" 2>/dev/null \
+    | awk 'NR!=1{print $2"/"$1 }' \
+    | sort -un \
+    | RenderInfo 'lsof'
+
+    # ROW sha1
+    if [[ -f "$target" ]] && [[ -r "$target" ]] ; then
+        # File-specific
+        local hash="$( sha1sum -- "$target" )"
+        RenderInfo 'sha1' ${hash%% *}
+    fi
+
+}
+
+
+Info ()
+{
+    shopt -s checkwinsize
+    shopt -s globasciiranges
+
+    [[ "$1" == "-v" ]] && { shift ; MODE_VERB=1 ; }
+
+    local args="$@"
+    if [[ -z "$args" ]] ; then
+        for item in {.[^.],[^.]}* ; do
+            FetchInfo "$item"
+        done
+    else
+        for item in "$@"; do
+            FetchInfo "$item"
+        done
+    fi
+}
+
+
+
+############
+### Seek ###
+############
+
+
+
+# NAME: CheckBashItem
+# DESC: Introspect *default* shell (not current) functions and aliases,
+#       generally, those are not defined for non-interactive shells.
+# NOTE: Outputs word's `type` from an instrumentalized shell,
+#       If type is 'function', appends :<SOURCE_PATH>:<LINE_NO>
+#       If type is 'alias', appends :<ALIAS_DEFINITION>
+# ARGS: BASH_WORD
+# DEPS: socat
+
+CheckBashItem () # $1:WORD
+{
+
+    # TIP: Line-prefix used to identify *our* output lines,
+    # from potential shell output
+    local token="r7D%9@u#K_"
+
+    # DEV: Feed bash commands from HEREDOC
+    # DEV: Filter output with process substitution
+    bash -i <<PROCSUBST  &> >( # PROCSUBST start
+
+        # Instrumentalized bash output filter
+
+        while IFS= read -r line || [[ -n $line ]] ; do
+
+            [[ "$matched" ]] && break
+
+            # Trim
+            line="$( tr --delete '\r\n' <<<"$line" )"
+
+            # Filter
+            if [[ $line =~ ^$token: ]] ; then
+                matched=1
+                echo "${line#$token:}"
+            fi
+
+        done
+
+    ) \
+        # HEREDOC start: Instrumentalized bash input
+        export PROMPT_COMMAND= PS1= PS2= PS3= PS4=
+        trap - DEBUG
+
+        type=\$( type -t "$1" )
+
+        case \$type in
+
+        '') ;;
+
+        function) # Use debug mode to get the file & line declarations
+            shopt -s extdebug
+            decl=\$( declare -F $1 )
+            shopt -u extdebug
+
+            line="\$( cut -d' ' -f2  <<<"\$decl" )"
+            file="\$( cut -d' ' -f3- <<<"\$decl" )"
+            file="\$( realpath -s -- "\$file" )"
+
+            echo "$token:\$type:\$file:\$line" ;;
+
+        alias) # Resolve the alias
+            echo "$token:\$type:\${BASH_ALIASES[$1]}" ;;
+
+        *)  echo "$token:\$type" ;;
+
+        esac
+        exit
+PROCSUBST
+
+}
+
+
+# NAME: Seek
+# DESC: Probes XDG launchers and executables
+# ARGS: TARGET # Target pattern
+
+Seek () # $1:PATTERN $*:ARGS
+{
+    local color
+      [[ -t 1 ]] \
+    && which tput &>/dev/null \
+    && [ $( tput colors 2>/dev/null ) -ge 8 ] \
+    && color="--color"
+
+    local target="$1"
+
+    # border cases
+    if [[ -z "$target" ]] ; then
+        return 1
+    elif [[ -d "$target" ]] ; then
+        # echo "ERR: \"$target\" is a directory" >&2
+        return 1
+    elif [[ -f "$target" ]] ; then
+# TODO .desktop consistency check
+        if [[ "$target" =~ \.desktop$ ]] || [[ -x "$target" ]] ; then
+            echo "$target"
+            return
+        fi
+    elif [[ $target =~ [/*] ]] ; then
+        # echo "ERR: invalid pattern \"$target\", contains [/*]" >&2
+        return 1
+    fi
+
+    local xdgSearch="${XDG_DATA_HOME:-$HOME/.local/share}:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+
+    # probe exact matching .desktop
+    local xdgFind
+    IFS=:
+    for dir in $xdgSearch ; do
+        xdgFind="$xdgFind \"${dir%*/}/applications\""
+# BUG quotes are interpreted as str
+# TODO bash ARRAY or xargs !!!
+    done
+    unset IFS
+    local app apps="$( # DEV: eval required for correct arg parsing, TODO xargs ?
+        eval find -L $xdgFind -type f -a -iname "${target%*.desktop}.desktop" 2>/dev/null
+    )"
+    hints=$apps
+
+    # probe exact matching $PATH
+    local bin="$( which -- "$target" 2>/dev/null )"
+    if [[ -n "$bin" ]] ; then
+        if [[ -n "$hints" ]] ; then
+            hints="$hints"$'\n'"$bin"
+        else
+            hints="$bin"
+        fi
+    fi
+
+    # Recurse exact match
+    if [[ -n "$hints" ]] ; then
+
+        local exactCnt=$( wc -l <<<"$hints" )
+
+        if [[ $exactCnt -eq 1 ]] ; then
+            # echo "DBG: unique exact match: $hints" >&2
+            echo "$hints"
+            return
+
+        elif [[ $exactCnt -eq 2 ]] && [[ -n "$bin" ]] ; then
+            echo "WAR: XDG:\"$apps\" masks PATH:\"$bin\"" >&2
+            echo >&2
+            echo "$apps"
+            return
+
+        elif [[ $exactCnt -gt 1 ]] ; then
+              sort <<<"$hints" \
+            | while IFS= read -r file || [[ -n $file ]] ; do
+
+                if [[ -n "$color" ]] ; then
+                    echo -n "TRY: " >&2
+                    grep -Fi $color -- "$target" <<<"$file" >&2
+                else
+                    echo "TRY: $file" >&2
+                fi
+
+              done
+
+            echo "WAR: $exactCnt exact matches for \"$target\"" >&2
+            return 1
+        fi
+    fi
+
+
+    # Partial matching
+    hints=
+    if [[ ${#target} -ge 2 ]]; then
+
+        # check partial matching $PATH
+        hints="$(
+            find -- $( tr ':' ' ' <<<"$PATH" ) \
+            -mindepth 1 -maxdepth 1 \
+            -iname "*$target*" \
+            2>/dev/null
+        )"
+
+        # check partial matching .desktop
+        local results="$( # DEV: eval required for correct arg parsing, TODO xargs ?
+            eval find $xdgFind -type f -a -iname "*$target*.desktop" 2>/dev/null
+        )"
+
+        if [[ -n "$results" ]] ; then
+            if [[ -n "$hints" ]] ; then
+                hints="$hints"$'\n'"$results"
+            else
+                hints="$results"
+            fi
+        fi
+    fi
+
+    if [[ -n "$hints" ]] ; then
+
+        local partCnt=$( wc -l <<<"$hints" )
+
+        if [[ $partCnt -eq 1 ]] ; then
+
+            # Run unique partial matching lo tauncher
+            # echo "DBG: unique partial match: $hints" >&2
+            echo "$hints"
+            return
+
+        else
+            # Hint matching launchers list
+              sort <<<"$hints" \
+            | while IFS= read -r file || [[ -n $file ]] ; do
+
+                echo -n "TRY: " >&2
+                if [[ -n "$color" ]] ; then
+                    grep -Fi $color -- "$target" <<<"$file" >&2
+                else
+                    echo "$file" >&2
+                fi
+
+              done
+
+            echo "WAR: $partCnt partial matches for \"$target\"" >&2
+            return 1
+        fi
+
+    fi
+
+}
+
+
+
+############
+### MAIN ###
+############
+
+case "$( basename "$BASH_SOURCE" )" in
+
+    $INFO_NAME)  Info "$@" ;;
+    $OPEN_NAME)  Open "$@" ;;
+    $SEEK_NAME)  Seek "$@" ;;
+
+    # DEV: internal functions calls
+    "$( basename "$( readlink -f "$BASH_SOURCE" )" )")
+        case $1 in
+            Info|Open|Seek|Keep|RunFunction|Nohup|CheckBashItem) "$@" ; exit $? ;;
+        esac
+        echo "ERR: Invalid direct call" >&2
+        exit 1
+        ;;
+
+    *)
+        echo "ERR: Invalid call name ($( basename "$BASH_SOURCE" )), should be in {$INFO_NAME,$OPEN_NAME,$SEEK_NAME}" >&2
+        exit 1
+esac
