@@ -243,7 +243,7 @@ Open () # $1:TARGET $*:ARGS
 
         # Probe XDG launcher + PATH executables
         local probed
-        probed="$( Seek "$target" )"
+        probed="$( Seek $color "$target" )"
         if [[ $? -ne 0 ]] \
         || [[ ! -e "$probed" ]] ; then
             echo "ERR: failed to probe \"$target\"" >&2
@@ -448,7 +448,7 @@ FetchInfo ()
 
         # Probe XDG launcher + PATH executables
         local probed
-        probed="$( Seek "$target" )"
+        probed="$( Seek $color "$target" )"
 
         if [[ $? -ne 0 ]] \
         || [[ ! -e "$probed" ]] ; then
@@ -829,6 +829,9 @@ Seek () # $1:PATTERN $*:ARGS
     && which tput &>/dev/null \
     && [ $( tput colors 2>/dev/null ) -ge 8 ] \
     && color="--color"
+      [[ "$1" == "--color" ]] \
+    && color="--color" \
+    && shift
 
     local target="$1"
 
