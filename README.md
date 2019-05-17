@@ -87,4 +87,4 @@ Just symlink `gnosh` script to `i`, `o` & `s` for handy usage.
 
 `gnosh` is written for bash and requires the following binaries:
 
-`crudini` `df` `dpkg` `file` `find` `getfattr` `head` `ldd` `lsattr` `lsof` `netstat` `readlink` `sha1sum` `stat` `tac` `test` `wc` `xdg-mime`
+`crudini` `df` `dpkg` `file` `find` `getfattr` `head` `ldd` `lsattr` `lsof` `netstat` `readlink` `sha1sum` `stat` `tac` `wc` `xdg-mime`
