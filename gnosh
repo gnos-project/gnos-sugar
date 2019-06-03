@@ -362,7 +362,7 @@ RenderInfo () # $1:NAME # $*:OPT_VAL
     echo -ne "$name"
     [[ -n "$color" ]] && echo -ne '\e[0m'
 
-    if [[ -z "$MODE_VERB" ]] ; then
+    if [[ -z "$MODE_VERB" && -t 1 ]] ; then
 
         # Join
         val="$( awk '{printf "%s", $0; if (!f) {f=0; printf ", "} }' <<<"$val" )"
