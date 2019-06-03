@@ -563,6 +563,7 @@ FetchInfo ()
     if [[ -d "$target" ]] && [[ -r "$target" ]] && [[ -x "$target" ]] ; then
 
         # ROW fail: unreadables + broken links
+        echo -n "Checking unreadables & broken links ..." >&2
         local fail=$(
               find -- "$target" 2>/dev/null \
                                  -type l   \! -readable   -printf "/%p\n" \
@@ -572,15 +573,17 @@ FetchInfo ()
                 ,    -type d  \! -readable    -executable -printf "%p///\n" \
             | sort
         )
+        echo -ne "\r\e[0K" >&2
         RenderInfo 'fail' <<<"$fail"
 
         # ROW size: total
         local sizeWarn
         [[ -n "$fail" ]] && sizeWarn="+fail"
+        echo -n "Calculating disk usage ..." >&2
+        local size=$( du -sh -- "$target" 2>/dev/null | cut -f1 )
+        echo -ne "\r\e[0K" >&2
         RenderInfo 'size' \
-            "~" \
-            $( du -sh -- "$target" 2>/dev/null | cut -f1 ) \
-            $sizeWarn
+            "~" $size $sizeWarn
 
 
     # File-specific
@@ -702,7 +705,7 @@ FetchInfo ()
         | sort -u
         )
         echo -ne "\r\e[0K" >&2
-        RenderInfo 'dpkg' "$dpkg"
+        RenderInfo 'dpkg' <<<$dpkg
     fi
 
     # ROW lsof
