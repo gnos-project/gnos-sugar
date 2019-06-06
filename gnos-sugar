@@ -1,5 +1,5 @@
 #!/bin/bash
-# NAME: gnosh
+# NAME: gnos-sugar
 # DESC: Desktop-aware command-line sugar
 # DEPS: xdg-mime crudini
 

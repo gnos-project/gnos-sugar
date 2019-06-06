@@ -1,4 +1,4 @@
-# gnosh is a fuzzy CLI & GUI helper for GNOS
+# Fuzzy CLI & GUI helper for GNOS
 
 ## Usage
 
@@ -83,8 +83,8 @@ USAGE: s PATTERN
 
 ## Install
 
-Just symlink `gnosh` script to `i`, `o` & `s` for handy usage.
+Just symlink `gnos-sugar` script to `i`, `o` & `s` for handy usage.
 
-`gnosh` is written for bash and requires the following binaries:
+`gnos-sugar` is written for bash and requires the following binaries:
 
 `crudini` `df` `dpkg` `file` `find` `getfattr` `head` `ldd` `lsattr` `lsof` `netstat` `readlink` `sha1sum` `stat` `tac` `wc` `xdg-mime`
